@@ -1,0 +1,391 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use utf8;
+
+use JSON::XS;
+use LWP::UserAgent;
+use Encode;
+use SQLite::DB;
+
+my $dir = $0;
+$dir =~ s/[\\\/]?[^\\\/]+$//;
+
+########################################################################################################################
+
+$ENV{PERL_LWP_SSL_VERIFY_HOSTNAME} = 0;
+
+my @domain = qw(
+    googlevideo.com 
+    youtu.be 
+    youtube.com 
+    youtubei.googleapis.com 
+    youtubeembeddedplayer.googleapis.com 
+    ytimg.l.google.com 
+    ytimg.com 
+    jnn-pa.googleapis.com 
+    youtube-nocookie.com 
+    youtube-ui.l.google.com 
+    yt-video-upload.l.google.com 
+    wide-youtube.l.google.com 
+    youtubekids.com
+);
+
+sub netupdate {
+    my $fname = 'test.conf' || return;
+    open(my $fh, '>', $fname) || return wrlog('Can\'t open file \'%s\': %s', $fname, $!);
+
+    foreach my $n (sort { $a->{net} cmp $b->{net} } @_) {
+        print $fh "    route $n->{net} unreachable;\n";
+    }
+
+    close $fh;
+
+    wrlog('File \'%s\' updated', $fname);
+}
+
+
+my $logfile = '';#'/var/log/domnet.update.log';
+my $pidfile = '';#'/var/run/domnet.update.pid';
+my $dbfile = $dir . '/domnet.db';
+
+
+########################################################################################################################
+
+my $pid;
+if ($pidfile) {
+    $pid = PidFile->new($pidfile) || exit;
+}
+
+my @net = netload();
+my $chg = 0;
+foreach my $dom (@domain) {
+    #print "domain: $dom\n";
+    my @ip = domain2ip($dom);
+
+    foreach my $ip (@ip) {
+        my $net = findnet($ip, @net);
+        #print "    ip: $ip\n";
+        if ($net) {
+            $net->{update} = 1;
+            next;
+        }
+
+        my @r = ripe_ip2net($ip);
+        @r || wrlog('Not found nets for IP: %s', $ip);
+        
+        foreach my $r (@r) {
+            $r->{net} = delete($r->{route});
+            $r->{update} = 1;
+            $chg ++;
+            wrlog('New Net: [AS%d] %s (by domain: %s, IP: %s)', $r->{origin}, $r->{net}, $dom, $ip);
+        }
+
+        # В данном проекте берём все подсети, которые вернул RIPE.
+        # В реальности RIPE отдаёт обычно более одной подсети, например:
+        #   - 142.250.0.0/15
+        #   - 142.250.184.0/24
+        # По-хорошему, надобы, оставить только самую маленькую подсеть (142.250.184.0/24),
+        # но пока что в этом острой необходимости нет, поэтому для упрощения будем использовать
+        # все сети.
+        push @net, @r;
+    }
+}
+
+foreach my $n (@net) {
+    next if $n->{update} || (($n->{actual}||0) > 1);
+    $n->{remove} = 1;
+    $chg ++;
+}
+@net = grep { !$_->{remove} } @net;
+
+netupdate(@net) if $chg;
+netsave(@net);
+
+#
+
+########################################################################################################################
+
+sub netload {
+    my $net = db('select net,origin,actual from nets') || return;
+    return map { { net => $_->[0], origin => int($_->[1]), actual => int($_->[2]) } } @$net;
+}
+
+sub netsave {
+    db('update nets set actual=actual-1') || return;
+
+    foreach my $n (@_) {
+        $n->{update} || next;
+        db(
+            'replace into nets (net, origin, actual) values (\'%s\', \'%d\', 10);',
+            $n->{net},
+            $n->{origin}
+        ) || return;
+    }
+
+    db('delete from nets where actual <= 0') || return;
+    
+    return 1;
+}
+
+########################################################################################################################
+
+sub findnet {
+    my $ip = shift;
+
+    my $ipn = ipn($ip) || return;
+
+    foreach my $n (@_) {
+        my ($netn, $mskn) = netn($n->{net});
+        next if !$netn || ($netn != ($ipn & $mskn));
+        return $n;
+    }
+
+    return;
+}
+
+sub ipn {
+    my $ip = shift;
+    return if $ip !~ /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/;
+    return if ($1 > 255) || ($2 > 255) || ($3 > 255) || ($4 > 255);
+
+    return (int($1) << 24) | (int($2) << 16) | (int($3) << 8) | int($4);
+}
+
+sub ipa {
+    my $ip = shift;
+    
+    if ($ip =~ /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/) {
+        return sprintf '%d.%d.%d.%d', $1, $2, $3, $4;
+    }
+    
+    return if $ip !~ /^\d+$/;
+    $ip = int $ip;
+
+    return sprintf(
+        '%d.%d.%d.%d',
+        ($ip >> 24) & 0xff,
+        ($ip >> 16) & 0xff,
+        ($ip >> 8 ) & 0xff,
+        $ip & 0xff
+    );
+}
+
+sub maskn {
+    my $mask = shift() || return 0;
+    $mask = 32 if $mask > 32;
+    my $n = 0;
+    for(; $mask > 0; $mask--) {
+        $n = $n | (1 << (32-$mask));
+    }
+
+    return $n;
+}
+
+sub netn {
+    my ($net, $mask) = split('/', shift());
+    
+    my $ipn = ipn($net);
+    defined($ipn) || return;
+
+    $mask = 32 if !defined($mask) || ($mask !~ /^\d+$/);
+    my $mskn = maskn($mask);
+    return ($ipn & $mskn, $mskn, int $mask);
+}
+
+########################################################################################################################
+
+sub domain2ip {
+    my $dom = shift;
+
+    my @row =
+        map { s/\s+$//; $_; }
+        `dig "$dom" +noall +answer`;
+    
+    my @ip = ();
+    foreach (@row) {
+        my ($host, $ttl, $in, $type, $ip) = split /\s+/;
+        next if !$type || ($type ne 'A') || !$ip || ($ip !~ /^\d+\.\d+\.\d+\.\d+$/);
+        push @ip, $ip;
+    }
+
+    return @ip;
+}
+
+########################################################################################################################
+
+sub ripe_ip2net {
+    my $ip = shift;
+
+    my $d = get('https://stat.ripe.net/data/whois/data.json?resource=' . $ip);
+
+    return if ref($d->{data}) ne 'HASH';
+    my $rall = $d->{data}->{irr_records};
+    return if ref($rall) ne 'ARRAY';
+
+    my @net = ();
+    foreach my $r (@$rall) {
+        next if ref($r) ne 'ARRAY';
+        my $n = {
+            map { ($_->{key} => $_->{value}) }
+            grep {
+                (ref($_) eq 'HASH') &&
+                (($_->{key}||'') =~ /^(route|origin)$/)
+            }
+            @$r
+        };
+        $n->{route} || next;
+        push @net, $n;
+    }
+
+    return @net;
+}
+
+sub get {
+    my $url = shift;
+
+    # http prepare
+    my $req = eval { HTTP::Request->new(GET => $url); };
+    if (!$req) {
+        wrlog('req prepare: %s', $@);
+        return;
+    }
+
+    wrlog("GET: %s", $url);
+
+    # Выполнение HTTP-запроса
+    my $ua = LWP::UserAgent->new;
+    my $r = $ua->request($req);
+
+    # Смотрим результат выполнения
+    my $code    = $r->code();
+    my $reply   = $r->decoded_content();
+    my $data    = eval { JSON::XS->new->utf8->decode( $reply ) };
+
+    wrlog('ret[%s]: %s', $code, $reply) if $code != 200;
+    return $data;
+}
+
+
+########################################################################################################################
+##
+
+# не смог нормально поставить на mac DBD::Sqlite, поэтому вручную через утилиту sqlite3
+sub db {
+    my $sql = shift;
+    $sql = sprintf($sql, @_) if @_;
+
+    $sql =~ s/([\"\\])/\\$1/g;
+    my $cmd = 'sqlite3 ' . $dbfile . ' "' . $sql . '"';
+    wrlog('DB: %s', $cmd);
+
+    my @r = map { s/\s+$//; $_ } `$cmd`;
+    return [] if !@r || ((@r == 1) && ($r[0] eq ''));
+
+    if ($r[0] =~ /error/i) {
+        wrlog('DB fail: %s', $_) foreach @r;
+    }
+
+    return [ map { [ split '\|' ] } @r ];
+}
+
+########################################################################################################################
+
+#####   wrlog($str, ... params ...)
+#####   
+#####   Запись в лог-файл.
+#####   Местоположение лог-файла указано в $logdir в заголовке файла
+
+sub wrlog {
+    my $s = shift;
+    $s = sprintf($s, @_) if @_;
+
+    my $time = localtime(time);
+
+    Encode::_utf8_off($s);
+    if (!$logfile) {
+        print "$time [$0] [$$] $s\n";
+    }
+    elsif (open(my $fh, '>>', $logfile)) {
+        print $fh "$time [$0] [$$] $s\n";
+        close $fh;
+    }
+    else {
+        print "Can\'t open log file($logfile): $!\n";
+        print "$time [$0] [$$] $s\n";
+    }
+}
+
+########################################################################################################################
+
+#####   PidFile
+#####   
+#####   Класс для контроля запуска процесса через PID-файл.
+#####   
+#####   Инициализация:
+#####   
+#####       my $pid = PidFile->new("/var/run/$me.pid") || exit;
+#####   
+#####       При этом будет:
+#####       - проверен PID-файл и его валидность
+#####       - создан PID-файл
+#####       - перехвачены INT/TERM-прерывания для корректного выхода
+#####   
+#####       При любых проблемах с PID-файлом будет возвращено undef.
+#####   
+#####   Уничтожение
+#####   
+#####       Рассчитано на штатное уничтожение переменной $pid,
+#####       хранящей результат PidFile->new.
+#####       Как только переменная будет стёрта, то и PID-файл будет удалён.
+
+package PidFile;
+
+sub wrlog { ::wrlog(@_) }
+
+sub new {
+    my ($class, $file) = @_;
+
+    if (-e $file) {
+        wrlog('Last pid is present!');
+
+        my $fh;
+        if (!open($fh, $file)) {
+            wrlog('Warn start(%s) Last proccess may be alive.!', $!);
+            return;
+        }
+        my $pid = int <$fh>;
+        close $fh;
+
+        if (($pid > 1) && kill(0, $pid)) {
+            wrlog("Program already running (%d)!", $pid);
+            return;
+        }
+    }
+
+    my $fh;
+    if (!open($fh, ">$file")) {
+        wrlog('Can\'t make pidfile (%s): %s', $file, $!);
+        return;
+    }
+
+    print $fh $$;
+    close $fh;
+
+    my $self = bless({ file => $file }, $class);
+
+    $SIG{INT}  = sub { wrlog('interrupt');  exit; };
+    $SIG{QUIT} = sub { wrlog('quit');       exit; };
+    $SIG{TERM} = sub { wrlog('terminate');  exit; };
+    $SIG{KILL} = sub { wrlog('killed');     exit; };
+
+    return $self;
+}
+
+DESTROY {
+    my $self = shift() || return;
+
+    my $file = $self->{file} || return;
+    unlink($file) || wrlog("having trouble deleting $file: $!");
+}
