@@ -32,6 +32,10 @@ my @domain = qw(
     youtubekids.com
 );
 
+my @host = qw(
+    www.windguru.cz
+);
+
 sub netupdate {
     my $fname = 'test.conf' || return;
     open(my $fh, '>', $fname) || return wrlog('Can\'t open file \'%s\': %s', $fname, $!);
@@ -93,6 +97,23 @@ foreach my $dom (@domain) {
     }
 }
 
+foreach my $host (@host) {
+    #print "host: $host\n";
+    my @ip = domain2ip($host);
+
+    foreach my $ip (@ip) {
+        my $net = findnet($ip, @net);
+        #print "    ip: $ip\n";
+        if ($net) {
+            $net->{update} = 1;
+            next;
+        }
+
+        $chg ++;
+        push @net, { net => $ip . '/32', update => 1 };
+    }
+}
+
 foreach my $n (@net) {
     next if $n->{update} || (($n->{actual}||0) > 1);
     $n->{remove} = 1;
@@ -120,7 +141,7 @@ sub netsave {
         db(
             'replace into nets (net, origin, actual) values (\'%s\', \'%d\', 10);',
             $n->{net},
-            $n->{origin}
+            $n->{origin}||0
         ) || return;
     }
 
@@ -270,6 +291,21 @@ sub get {
 
 ########################################################################################################################
 ##
+
+=pod
+
+CREATE TABLE IF NOT EXISTS "nets"
+(
+    [id] INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    [net] CHAR(32)  NOT NULL,
+    [origin] CHAR(32)  NOT NULL,
+    [actual] INTEGER  NOT NULL
+);
+
+CREATE UNIQUE INDEX [id] ON "nets" ([id]);
+CREATE UNIQUE INDEX [net] ON "nets" ([net]);
+
+=cut
 
 # не смог нормально поставить на mac DBD::Sqlite, поэтому вручную через утилиту sqlite3
 sub db {
