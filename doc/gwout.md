@@ -9,7 +9,7 @@
 Устанавливаем пакеты:
 
 ```bash
-pkg install bash mc
+pkg install bash mc bird2 git net-snmp
 ```
 
 Соглашаемся везде: `y` и `enter`.
@@ -109,52 +109,6 @@ freebsd-update install
 reboot
 ```
 
-## Пересборка ядра
-
-Нужно только там, где нужен файрвол, встроенный в ядро.
-
-```bash
-cd /sys/amd64/conf
-```
-
-Делаем свой конфиг (внимание! Имя файла!)
-
-```bash
-cp GENERIC SERVER
-```
-
-```bash
-ee SERVER
-```
-
-Параметр `ident` д.б. таким же, как имя файла
-
-    ident           SERVER
-
-    options         IPFIREWALL                      # firewall
-    options         IPFIREWALL_VERBOSE              # enable logging to syslogd(8)
-    options         IPFIREWALL_VERBOSE_LIMIT=100    # limit verbosity
-    options         IPFIREWALL_DEFAULT_TO_ACCEPT    # allow everything by default
-
-    #options         DUMMYNET                       # only for router
-    #options         IPDIVERT                       # only for router
-
-Выполняем:
-
-```bash
-config SERVER
-```
-
-```bash
-cd ../compile/SERVER
-```
-
-Компилируем и устанавливаем:
-
-```bash
-make cleandepend && make depend && make all install clean
-```
-
 ## SSH
 
 Редактируем:
@@ -178,7 +132,7 @@ ee /etc/ssh/sshd_config
 ## mc config
 
 ```bash
-fetch -o /tmp/mc.tar http://doc.northnet.ru/northnet/freebsdbase/mc.tar
+fetch -o /tmp/mc.tar https://github.com/cliffanet/domnet/raw/refs/heads/master/doc/mc.tar
 tar -xf /tmp/mc.tar -C /
 rm /tmp/mc.tar
 ```
@@ -250,36 +204,55 @@ tzsetup
     */20    *       *       *       *       root    /usr/sbin/ntpdate ntp.northnet.ru 192.168.50.100 192.168.50.50 2>&1 >> /var/log/ntpdate.log
     ```
 
-## Файрвол
+## Файрвол (NAT)
 
+Файл `/etc/pf.conf`:
+
+    set block-policy drop
+    set limit src-nodes 1000000
+    set limit states 1000000
+    set limit frags 200000
+    set optimization aggressive
+
+    scrub fragment reassemble
+    nat on bce0 from !bce0 to any -> (bce0)
+
+Имя интерфейса `bce0` заменяем на верное - основной сетевой интерфейс сервера.
+
+## bird
+
+
+Файл `/usr/local/etc/bird.conf`:
 
 
 ## /etc/rc.conf
 
-Пример файла:
-
-
     # Set dumpdev to "AUTO" to enable crash dumps, "NO" to disable
     dumpdev="AUTO"
-    hostname="doc.northnet.ru"
+    hostname="manager.example.com"
     keymap="ru.kbd"
 
-    defaultrouter="192.168.50.1"
-    ifconfig_igb0="inet 192.168.50.1000/24"
+    defaultrouter="XXX.XXX.XXX.XXX"
+    ifconfig_bce0="inet XXX.XXX.XXX.XXX/24"
     
     tcp_extensions="NO"
     tcp_drop_synfin="YES"
     icmp_drop_redirect="YES"
     icmp_log_redirect="YES"
-    sshd_enable="YES"
-    ntpd_enable="YES"
     sendmail_enable="NONE"
     sendmail_submit_enable="NO"
     sendmail_outbound_enable="NO"
     sendmail_msp_queue_enable="NO"
 
-    firewall_enable="YES"
-    firewall_type="Server"
+    sshd_enable="YES"
+    ntpd_enable="YES"
+
+    pf_enable="YES"
+    pf_rules="/etc/pf.conf"
+    pf_program="/sbin/pfctl"
+
+    bird_enable="YES"
+    snmpd_enable="YES"
 
 ## /etc/sysctl.conf
 
@@ -292,3 +265,160 @@ tzsetup
     net.inet.icmp.drop_redirect=1   # не обращаем внимания на icmp redirect
     net.inet.icmp.log_redirect=0    # и не логируем их
     net.inet.ip.redirect=0          # не реагируем на icmp redirect
+
+    net.inet.ip.forwarding=1
+
+## /usr/local/share/snmp/snmpd.conf
+
+    syslocation  outdoor
+    syscontact   manager
+    rocommunity  ROCOMMUNITY
+
+## Шифрование канала
+
+```bash
+pkg install ipsec-tools
+```
+
+Файл `/etc/rc.conf`:
+
+    ipsec_enable="YES"
+    ipsec_program="/usr/local/sbin/setkey"
+    ipsec_file="/usr/local/etc/racoon/setkey.conf"
+    racoon_enable="YES"
+    racoon_flags="-l /var/log/racoon.log"
+
+Файл `/usr/local/etc/racoon/racoon.conf`:
+
+    path include "/usr/local/etc/racoon";
+    path pre_shared_key "/usr/local/etc/racoon/psk.txt";
+
+    listen {
+        isakmp XXX.XXX.XXX.XXX [500];
+        isakmp_natt XXX.XXX.XXX.XXX [4500];
+    }
+
+    timer
+    {
+        # To keep the NAT-mappings on your NAT gateway, there must be
+        # traffic between the peers. Normally the UDP-Encap traffic
+        # (i.e. the real data transported over the tunnel) would be
+        # enough, but to be safe racoon will send a short
+        # "Keep-alive packet" every few seconds to every peer with
+        # whom it does NAT-Traversal.
+        # The default is 20s. Set it to 0s to disable sending completely.
+        natt_keepalive 10 sec;
+    }
+
+    remote anonymous {
+        exchange_mode main;
+        proposal_check obey;
+        support_proxy on;
+        nat_traversal on;
+        #generate_policy on;
+        ike_frag on;
+        dpd_delay 20;
+
+        proposal {
+            encryption_algorithm aes;
+            hash_algorithm sha1;
+            authentication_method pre_shared_key;
+            dh_group modp1024;
+        }
+
+        proposal {
+            encryption_algorithm aes;
+            hash_algorithm sha1;
+            authentication_method pre_shared_key;
+            dh_group modp2048;
+        }
+
+        proposal {
+            encryption_algorithm des;
+            hash_algorithm sha1;
+            authentication_method pre_shared_key;
+            dh_group modp1024;
+        }
+    }
+
+    sainfo  anonymous {
+        pfs_group                       2;
+        lifetime                        time 1 hour;
+        encryption_algorithm            aes;
+        authentication_algorithm        hmac_sha1;
+        compression_algorithm           deflate;
+    }
+
+Файл `/usr/local/etc/racoon/psk.txt`:
+
+    * mypassword
+
+Файл `/usr/local/etc/racoon/setkey.conf`
+
+    flush;
+    spdflush;
+    spdadd 0.0.0.0/0[0] 0.0.0.0/0[1701] udp -P in ipsec esp/transport//require;
+    spdadd 0.0.0.0/0[1701] 0.0.0.0/0[0] udp -P out ipsec esp/transport//require;
+    spdadd YY.YY.YY.YY/32 XXX.XXX.XXX.XXX/32 ipencap -P in ipsec esp/transport/YY.YY.YY.YY-XXX.XXX.XXX.XXX/require;
+    spdadd XXX.XXX.XXX.XXX/32 YY.YY.YY.YY/32 ipencap -P out ipsec esp/transport/XXX.XXX.XXX.XXX-YY.YY.YY.YY/require;
+
+    # YY.YY.YY.YY - локальный опорный роутер (peer для данного сервера)
+
+## mpd
+
+> Чтобы работал l2tp, необходимо настроить всё из раздела [Шифрование канала](#шифрование-канала)
+
+```bash
+pkg install mpd5
+```
+
+Файл `/etc/rc.conf`:
+
+    mpd_enable="YES"
+
+Файл `/usr/local/etc/mpd5/mpd.conf`:
+
+    startup:
+        log +PHYS2
+        # configure the console
+        set console self 127.0.0.1 5005
+        set console open
+
+
+    default:
+        load l2tp_server
+
+    l2tp_server:
+        set ippool add pool1 192.168.101.101 192.168.101.150
+
+        create bundle template B
+        set iface idle 1800
+        set iface enable proxy-arp
+        set iface enable tcpmssfix
+        set ipcp yes vjcomp
+        set ipcp ranges 192.168.101.1/32 ippool pool1
+        set ipcp dns 8.8.8.8
+
+        set bundle enable compression
+        set ccp yes mppc
+        set mppc yes e40
+        set mppc yes e128
+        set mppc yes stateless
+
+        create link template L l2tp
+        set link action bundle B
+        set link enable multilink
+        set link yes acfcomp protocomp
+        set link no pap chap eap
+        set link enable chap
+        set link enable chap-msv2
+        set link keep-alive 10 60
+        set link mtu 1460
+        set l2tp self 0.0.0.0
+        set l2tp disable dataseq
+        set link enable incoming
+
+Файл `/usr/local/etc/mpd5/mpd.secret`:
+
+    user    superpassword
+
