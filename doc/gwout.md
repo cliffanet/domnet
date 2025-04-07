@@ -9,7 +9,7 @@
 Устанавливаем пакеты:
 
 ```bash
-pkg install bash mc bird2 git net-snmp
+pkg install bash mc bird2 git net-snmp p5-JSON-XS p5-LWP-Protocol-https bind-tools sqlite3
 ```
 
 Соглашаемся везде: `y` и `enter`.
@@ -159,11 +159,11 @@ tzsetup
 
 ## NTP - синхронизация времени
 
-Либо через `/etc/crontab`:
+Либо через `/etc/crontab`
 
     */30    *       *       *       *       root    /usr/sbin/ntpdate -u ntp.northnet.ru 192.168.50.100 192.168.50.50 > /dev/null
 
-Либо через `ntpd`:
+Либо через `ntpd`
 
 * В файле `/etc/rc.conf` (возможно, оно там уже оказалось при установке)
 
@@ -196,7 +196,7 @@ tzsetup
     
     Должна быть строка, которая начинается с `*`.
 
-Либо через `cron` + `ntpdate`:
+Либо через `cron` + `ntpdate`
 
 * В файле `/etc/crontab`
 
@@ -206,7 +206,7 @@ tzsetup
 
 ## Файрвол (NAT)
 
-Файл `/etc/pf.conf`:
+Файл `/etc/pf.conf`
 
     set block-policy drop
     set limit src-nodes 1000000
@@ -222,7 +222,43 @@ tzsetup
 ## bird
 
 
-Файл `/usr/local/etc/bird.conf`:
+Файл `/usr/local/etc/bird.conf`
+
+    log "/var/log/bird.log" all;
+
+    protocol device { }
+
+    protocol kernel {
+        learn;
+        ipv4 {                # Connect protocol to IPv4 table by channel
+            import all;       # Import to table, default is import all
+            export all;       # Export to protocol. default is export none
+        };
+    }
+
+    protocol static {
+        ipv4;                               # Again, IPv4 channel with default options
+        include "/home/routes.conf";
+
+        # cliff
+        route 192.168.3.0/24 via 172.16.1.2;
+    }
+
+    template bgp bgp_peer {
+        local as 65000;
+        #direct;
+        ipv4 {
+            import none;
+            export filter {
+                if proto = "static1" && ifname = "bce0" then
+                    accept;
+                else
+                    reject;
+            };
+        };
+    }
+
+    protocol bgp bgp_cliff from bgp_peer { neighbor 172.16.1.2 as 65003; }
 
 
 ## /etc/rc.conf
@@ -274,13 +310,22 @@ tzsetup
     syscontact   manager
     rocommunity  ROCOMMUNITY
 
+## Скрипт, обновляющий таблицу маршрутизации
+
+```bash
+cd /home
+git clone https://github.com/cliffanet/domnet.git
+rm -rf /home/domnet/.git
+```
+
+
 ## Шифрование канала
 
 ```bash
 pkg install ipsec-tools
 ```
 
-Файл `/etc/rc.conf`:
+Файл `/etc/rc.conf`
 
     ipsec_enable="YES"
     ipsec_program="/usr/local/sbin/setkey"
@@ -288,7 +333,7 @@ pkg install ipsec-tools
     racoon_enable="YES"
     racoon_flags="-l /var/log/racoon.log"
 
-Файл `/usr/local/etc/racoon/racoon.conf`:
+Файл `/usr/local/etc/racoon/racoon.conf`
 
     path include "/usr/local/etc/racoon";
     path pre_shared_key "/usr/local/etc/racoon/psk.txt";
@@ -349,7 +394,7 @@ pkg install ipsec-tools
         compression_algorithm           deflate;
     }
 
-Файл `/usr/local/etc/racoon/psk.txt`:
+Файл `/usr/local/etc/racoon/psk.txt`
 
     * mypassword
 
@@ -372,11 +417,11 @@ pkg install ipsec-tools
 pkg install mpd5
 ```
 
-Файл `/etc/rc.conf`:
+Файл `/etc/rc.conf`
 
     mpd_enable="YES"
 
-Файл `/usr/local/etc/mpd5/mpd.conf`:
+Файл `/usr/local/etc/mpd5/mpd.conf`
 
     startup:
         log +PHYS2
@@ -418,7 +463,7 @@ pkg install mpd5
         set l2tp disable dataseq
         set link enable incoming
 
-Файл `/usr/local/etc/mpd5/mpd.secret`:
+Файл `/usr/local/etc/mpd5/mpd.secret`
 
     user    superpassword
 

@@ -7,7 +7,6 @@ use utf8;
 use JSON::XS;
 use LWP::UserAgent;
 use Encode;
-use SQLite::DB;
 
 my $dir = $0;
 $dir =~ s/[\\\/]?[^\\\/]+$//;
@@ -111,7 +110,7 @@ my @static = qw(
 );
 
 sub netupdate {
-    my $fname = 'test.conf' || return;
+    my $fname = '/home/routes.conf' || return;
     my $chg = shift;
     return if !$chg && (-f $fname);
 
@@ -122,6 +121,8 @@ sub netupdate {
     }
 
     close $fh;
+
+    `/usr/local/etc/rc.d/bird restart`;
 
     wrlog('File \'%s\' updated', $fname);
 }
