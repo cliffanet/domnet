@@ -404,10 +404,10 @@ pkg install ipsec-tools
     spdflush;
     spdadd 0.0.0.0/0[0] 0.0.0.0/0[1701] udp -P in ipsec esp/transport//require;
     spdadd 0.0.0.0/0[1701] 0.0.0.0/0[0] udp -P out ipsec esp/transport//require;
-    spdadd YY.YY.YY.YY/32 XXX.XXX.XXX.XXX/32 ipencap -P in ipsec esp/transport/YY.YY.YY.YY-XXX.XXX.XXX.XXX/require;
-    spdadd XXX.XXX.XXX.XXX/32 YY.YY.YY.YY/32 ipencap -P out ipsec esp/transport/XXX.XXX.XXX.XXX-YY.YY.YY.YY/require;
+    spdadd YYY.YYY.YYY.YYY/32 XXX.XXX.XXX.XXX/32 ipencap -P in ipsec esp/transport/YYY.YYY.YYY.YYY-XXX.XXX.XXX.XXX/require;
+    spdadd XXX.XXX.XXX.XXX/32 YYY.YYY.YYY.YYY/32 ipencap -P out ipsec esp/transport/XXX.XXX.XXX.XXX-YYY.YYY.YYY.YYY/require;
 
-    # YY.YY.YY.YY - локальный опорный роутер (peer для данного сервера)
+    # YYY.YYY.YYY.YYY - локальный опорный роутер (peer для данного сервера)
 
 ## mpd
 
