@@ -34,6 +34,7 @@ my @domain = qw(
 
     intel.com
     grabcad.com
+    medium.com
 );
 
 my @host = qw(
